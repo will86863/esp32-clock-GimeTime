@@ -348,6 +348,19 @@ export default function GamesPage({
     return hit?.id ?? ''
   }, [live, games])
 
+  // 同名进程计数：同一个引擎 exe 被多个游戏共用时，界面上要能看出
+  // 它们是靠「完整路径」区分的，否则用户会以为是重复添加。
+  const nameCount = React.useMemo(() => {
+    const m = new Map<string, number>()
+    for (const g of games) {
+      const k = (g.process || '').toLowerCase()
+      m.set(k, (m.get(k) || 0) + 1)
+    }
+    return m
+  }, [games])
+
+  const sameNameCount = (process: string) => nameCount.get((process || '').toLowerCase()) ?? 0
+
   const cands: ExeCandidate[] = add.result?.candidates ?? []
   const renameErr = rename ? checkDisplay(renameVal) : ''
 
@@ -426,9 +439,21 @@ export default function GamesPage({
                 <TableCell>
                   <TableCellLayout>
                     <div className={s.path}>{g.exe}</div>
-                    <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
-                      进程 {g.process}
-                    </Text>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                      <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
+                        进程 {g.process}
+                      </Text>
+                      {sameNameCount(g.process) > 1 ? (
+                        <Tooltip
+                          content="多个程序共用这个引擎进程名，靠完整路径区分，互不影响"
+                          relationship="description"
+                        >
+                          <Badge appearance="tint" size="small" color="warning">
+                            同名 ×{sameNameCount(g.process)}
+                          </Badge>
+                        </Tooltip>
+                      ) : null}
+                    </div>
                   </TableCellLayout>
                 </TableCell>
                 <TableCell>

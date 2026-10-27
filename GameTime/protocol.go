@@ -34,15 +34,26 @@ type udpPayload struct {
 }
 
 // udpSender 持有 UDP 目标与连接，避免每秒重建 socket。
+//
+// 为什么不用 net.Dial（connected UDP）——这是 Windows 上的一个真实陷阱：
+// Dial 会把 socket 绑定到「当时那条路由 + 那个网卡地址」上，一旦网络接口
+// 状态变化（Wi-Fi 重连/漫游、休眠唤醒、切换网卡），这个已连接的 UDP socket
+// 会永久失效，之后每次 Write 都返回 WSAEINVAL(10022)
+// "wsasend: An invalid argument was supplied."，且不会自愈。
+//
+// 改成 ListenUDP + WriteToUDP：socket 绑在 0.0.0.0:0 上不锁定具体接口，
+// 每个包都由内核重新查路由选源地址，网络抖动后自动恢复，不会卡死。
+// 另外再加一层兜底：任何一次写失败就丢弃 socket，下一轮自动重建。
 type udpSender struct {
-	mu   sync.Mutex
-	addr string
-	conn net.Conn
+	mu    sync.Mutex
+	conn  *net.UDPConn
+	raddr *net.UDPAddr
+	addr  string
 }
 
 func newUDPSender() *udpSender { return &udpSender{} }
 
-// Send 发送一帧数据。目标地址变化时自动重建连接。
+// Send 发送一帧数据。目标地址变化或上次写失败时自动重建 socket。
 // 返回值 err 用于前端展示 ESP32 连通状态。
 func (s *udpSender) Send(target string, p udpPayload) error {
 	if target == "" {
@@ -52,37 +63,46 @@ func (s *udpSender) Send(target string, p udpPayload) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.conn == nil || s.addr != target {
-		if s.conn != nil {
-			_ = s.conn.Close()
-			s.conn = nil
-		}
-		conn, err := net.Dial("udp4", target)
+	if s.conn == nil || s.addr != target || s.raddr == nil {
+		s.reset()
+		raddr, err := net.ResolveUDPAddr("udp4", target)
 		if err != nil {
-			s.addr = ""
 			return err
 		}
-		s.conn = conn
-		s.addr = target
+		// nil 表示绑定到 0.0.0.0:0 —— 不锁定任何网卡，每包重新选路
+		conn, err := net.ListenUDP("udp4", nil)
+		if err != nil {
+			return err
+		}
+		s.conn, s.raddr, s.addr = conn, raddr, target
 	}
 
 	data, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	_, err = s.conn.Write(data)
-	return err
+	if _, err = s.conn.WriteToUDP(data, s.raddr); err != nil {
+		// 写失败：立刻作废这个 socket，下一轮 Send 会重建。
+		// 网络恢复后最多 1 秒（一个发送间隔）就能自愈，不需要重启程序。
+		s.reset()
+		return err
+	}
+	return nil
+}
+
+// reset 关闭并清空底层连接（调用方需自行持锁）。
+func (s *udpSender) reset() {
+	if s.conn != nil {
+		_ = s.conn.Close()
+	}
+	s.conn, s.raddr, s.addr = nil, nil, ""
 }
 
 // Close 关闭底层连接。
 func (s *udpSender) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.conn != nil {
-		_ = s.conn.Close()
-		s.conn = nil
-		s.addr = ""
-	}
+	s.reset()
 }
 
 // ============================================================

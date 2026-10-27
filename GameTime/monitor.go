@@ -107,14 +107,19 @@ func (st *monitorState) tick(cfg Config) {
 	}
 
 	// ---- 会话状态机 ----
+	//
+	// 会话身份 = 显示的游戏（GameID） + 具体那个进程实例（PID）。
+	// 用 PID 而不是进程名判断「重启过」：同引擎的不同游戏进程名完全一样
+	// （都叫 SiglusEngine.exe），按名字比会把「切换游戏」误判成「没变」，
+	// 导致切换后仍在给旧游戏计时。
 	if game != nil && proc != nil {
 		switch {
 		case st.active == nil || st.active.GameID != game.ID:
-			// 新会话：结束旧的，开启新的
+			// 换游戏：结束旧的，开启新的
 			st.finishActive()
 			st.startActive(game, proc)
-		case st.active.Process != proc.Name:
-			// 同名不同进程（重启过）：按新进程重开
+		case st.active.PID != proc.PID:
+			// 同一个游戏重启了（新进程）：按新进程重开
 			st.finishActive()
 			st.startActive(game, proc)
 		}
@@ -177,6 +182,7 @@ func (st *monitorState) startActive(g *Game, p *ProcInfo) {
 	st.active = &activeSession{
 		GameID:  g.ID,
 		Process: p.Name,
+		PID:     p.PID,
 		Start:   p.Created,
 	}
 	writeActive(&activeSnapshot{
@@ -185,7 +191,7 @@ func (st *monitorState) startActive(g *Game, p *ProcInfo) {
 		Display: g.Display,
 		Start:   p.Created.Unix(),
 	})
-	log.Printf("[session] 开始 %s (%s) 起于 %s", g.Display, p.Name, p.Created.Format("15:04:05"))
+	log.Printf("[session] 开始 %s (%s pid=%d) 起于 %s", g.Display, p.Name, p.PID, p.Created.Format("15:04:05"))
 }
 
 // finishActive 结束当前会话并落盘。

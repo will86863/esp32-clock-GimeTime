@@ -178,14 +178,25 @@ func (a *App) AddGame(g Game) (Game, error) {
 		return g, fmt.Errorf("程序文件不存在：%s", exe)
 	}
 
+	// 统一成绝对路径：拖进来的可能是相对路径或带 ./.. 的写法，
+	// 而监控时比对的是进程的完整路径，两边必须是同一种形态才比得中。
+	if abs, aerr := filepath.Abs(exe); aerr == nil {
+		exe = abs
+	}
+
 	proc := filepath.Base(exe)
 	if g.Process != "" {
 		proc = g.Process
 	}
 
-	// 去重：同一进程名不重复添加（固件只有一个名字位，重复无意义）
+	// 去重按「完整 exe 路径」而不是进程名。
+	//
+	// 为什么改：大量视觉小说共用同一套引擎 exe（SiglusEngine.exe、
+	// RealLive.exe 等），按名字去重会导致「同一个引擎下的第二个游戏加不进来」，
+	// 而它们其实是完全不同的两个游戏，路径也不同。固件只有一个名字位指的是
+	// 「OLED 同时只显示一个」，不是「只能添加一个同名进程」。
 	for _, old := range cfg.Games {
-		if normProcess(old.Process) == normProcess(proc) {
+		if normPath(old.Exe) == normPath(exe) {
 			return g, fmt.Errorf("「%s」已经在列表里了（显示名 %s）", proc, old.Display)
 		}
 	}
@@ -233,7 +244,14 @@ func (a *App) UpdateGame(g Game) (Game, error) {
 			return g, err
 		}
 		cfg.Games[i].Display = d
-		if g.Exe != "" && g.Exe != cfg.Games[i].Exe {
+		if g.Exe != "" && normPath(g.Exe) != normPath(cfg.Games[i].Exe) {
+			// 换了 exe：同样要做「不能和列表里别的项重复」的检查，
+			// 否则可以通过改名把两个条目指到同一个程序上。
+			for _, other := range cfg.Games {
+				if other.ID != cfg.Games[i].ID && normPath(other.Exe) == normPath(g.Exe) {
+					return g, fmt.Errorf("这个程序已经在列表里了（显示名 %s）", other.Display)
+				}
+			}
 			cfg.Games[i].Exe = g.Exe
 			cfg.Games[i].Process = filepath.Base(g.Exe)
 		}

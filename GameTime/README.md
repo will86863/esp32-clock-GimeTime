@@ -5,6 +5,8 @@
 
 Go + Wails v2 单文件桌面程序，前端用微软 Fluent 2 设计系统（`@fluentui/react-components` v9）。
 
+当前版本 **v1.2.0**：按 exe 完整路径分辨同名引擎进程 + UDP 发送自愈。
+
 ---
 
 ## 快速开始
@@ -71,6 +73,39 @@ OLED 一行只有 16 个字符宽，超了会被画出屏幕。界面会实时�
 - 今日各程序横向柱状图、近 7/30 天折线图（手写 SVG，不引图表库）
 - **只记录已添加程序的运行时长，不记录空闲时间**
 
+### 同引擎多游戏的进程分辨
+
+大量视觉小说共用同一套引擎 exe —— 同一台机器上就同时存在
+`SiglusEngine_SteamEN.exe`（Rewrite Harvest / CLANNAD SS 用）和
+`RealLiveEn.exe`（CLANNAD SS / Tomoyo After 用）。
+
+**只按进程名匹配会串味**，所以匹配身份是 **exe 完整路径**：
+
+| 规则 | 说明 |
+|---|---|
+| 路径优先 | `normPath(进程完整路径) == normPath(Game.Exe)` 才命中 |
+| 名字兜底 | 只有在读不到进程路径（受保护进程）时才退回按进程名匹配 |
+| 去重按路径 | 添加/改名时按完整路径判重，同名不同目录的两个游戏可以共存 |
+| 会话按 PID | 判断「同一个游戏重启了」用 PID，不用进程名 |
+
+界面上同名进程会标一个 `同名 ×N` 徽章，提示它们靠路径区分、互不影响。
+
+> 历史包袱：v1.2.0 之前只有按名字匹配，会把 CLANNAD SS 的时长记到
+> Tomoyo After 头上。`tools/fix_hist_sessions.py` 可批量改判历史记录。
+
+### 网络健壮性
+
+UDP 发送**不用 connected socket**（`net.Dial` + `Write`），而是
+`net.ListenUDP` + `WriteToUDP`。
+
+原因：Windows 上已连接的 UDP socket 会把本地端点绑定到「当时那条路由」
+上，一旦 Wi-Fi 重连/漫游、休眠唤醒或切换网卡，这个 socket 永久失效，
+之后每次发送都返回 `WSAEINVAL(10022)`：
+`wsasend: An invalid argument was supplied.`，且不会自愈 —— 只能重启程序。
+
+改用不连接的 socket 后，每包由内核重新查路由选源地址；另外任何一次写失败
+都会丢弃并重建 socket，网络恢复后最多一个发送间隔就能自动接上。
+
 ### 启动行为
 
 - **开机自启**：写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，命令行带 `-minimized`
@@ -89,8 +124,8 @@ GameTime/
 ├─ protocol.go        UDP 载荷结构与实时状态
 ├─ config.go          配置读写 + 显示名校验（固件约束唯一入口）
 ├─ monitor.go         监控主循环（进程枚举 → 会话状态机 → UDP 发送）
-├─ session.go         「最后启动优先」的选择逻辑
-├─ winproc.go         进程枚举 + 创建时间（GetProcessTimes）
+├─ session.go         「最后启动优先」的选择逻辑 + 进程分辨（按 exe 完整路径）
+├─ winproc.go         进程枚举 + 创建时间 + 完整路径（GetProcessTimes / QueryFullProcessImageName）
 ├─ steam.go           libraryfolders.vdf / appmanifest / RunningAppID / exe 候选
 ├─ shortcut.go        .lnk 纯解析、.url、文件夹拒绝
 ├─ icon.go            exe 图标提取（Shell32 + GetDIBits → PNG）
@@ -114,14 +149,28 @@ GameTime/
 export GOPATH="C:/Users/will/.workbuddy/binaries/go/gopath"
 export GOPROXY="https://goproxy.cn,direct"
 export GOSUMDB="sum.golang.google.cn"
-export GOTOOLCHAIN="go1.27.2"
+export GOTOOLCHAIN="go1.26.10"
 export PATH="/c/Users/will/.workbuddy/binaries/go/gopath/bin:/c/Users/will/.workbuddy/binaries/go/go/bin:$PATH"
 export GOFLAGS="-mod=mod"
 
 cd "D:/Downloads/V1.4/GameTime"
-wails build -platform windows/amd64
+# 前端产物要先构建（二进制通过 go:embed 打包 frontend/dist）
+(cd frontend && npm run build)
+go build -trimpath -ldflags "-s -w -H=windowsgui" -o build/bin/GameTime.exe .
 # 产物：build/bin/GameTime.exe
 ```
+
+> 没用 `wails build` 也行：`main.go` 用 `//go:embed all:frontend/dist` 直接嵌入前端产物，
+> 只要前端先 `npm run build`，`go build` 出来的就是完整单文件 exe（不需要 Wails CLI）。
+> 版本号在 `main.go` 的 `appVersion` 和 `wails.json` 的 `productVersion`，两处要一起改。
+
+跑测试：
+
+```bash
+go test ./...
+```
+
+覆盖：UDP 发送与自愈、路径归一化、同引擎多游戏的进程分辨。
 
 重新生成图标（改了 `tools/gen_icons.mjs` 后）：
 

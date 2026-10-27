@@ -18,7 +18,7 @@ import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-const appVersion = "1.0.0"
+const appVersion = "1.2.0"
 
 //go:embed all:frontend/dist
 var assets embed.FS
